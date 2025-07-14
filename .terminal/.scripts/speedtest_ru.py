@@ -720,6 +720,8 @@ def build_request(url, data=None, headers=None, bump='0', secure=False):
 
     headers.update({
         'Cache-Control': 'no-cache',
+        'Referer': 'https://www.speedtest.net/',
+        'Accept-Language': 'ru,en-US;q=0.9,en;q=0.8',
     })
 
     printer('%s %s' % (('GET', 'POST')[bool(data)], final_url),
@@ -1457,7 +1459,7 @@ class Speedtest(object):
         printer('Closest Servers:\n%r' % self.closest, debug=True)
         return self.closest
 
-    def get_best_server(self, servers=None):
+    def get_best_server(self, servers=None, state=None):
         """Perform a speedtest.net "ping" to determine which speedtest.net
         server has the lowest latency
         """
@@ -1477,7 +1479,6 @@ class Speedtest(object):
         results = {}
         jitter_map = {}
         # Для прогресса
-        print('\nПроверка пинга ближайших серверов:')
         for idx, server in enumerate(servers):
             cum = []
             url = os.path.dirname(server['url'])
@@ -1506,43 +1507,40 @@ class Speedtest(object):
                     r = h.getresponse()
                     total = (timeit.default_timer() - start)
                 except HTTP_ERRORS:
-                    e = get_exception()
-                    printer('ERROR: %r' % e, debug=True)
                     cum.append(3600)
                     continue
-
                 text = r.read(9)
                 if int(r.status) == 200 and text == 'test=test'.encode():
                     cum.append(total)
                 else:
                     cum.append(3600)
                 h.close()
-
             avg = round((sum(cum) / 6) * 1000.0, 3)
-            # jitter = max - min (в мс)
             jitter = round((max(cum) - min(cum)) * 1000.0, 3)
             results[avg] = server
             jitter_map[avg] = jitter
-            # Прогресс-индикатор
-            name = server.get('name', '?')
-            dist = server.get('d', '?')
-            print(f"  {idx+1}. {name} [{dist:.2f} км]  Пинг: {avg} мс, Jitter: {jitter} мс")
-
+            # Обновляем блок
+            state['server'] = server.get('name', '-')
+            state['dist'] = f"{server.get('d', '-'):.2f}"
+            state['ping'] = avg
+            state['jitter'] = jitter
+            draw_status_block(state)
         try:
             fastest = sorted(results.keys())[0]
         except IndexError:
-            raise SpeedtestBestServerFailure('Unable to connect to servers to '
-                                             'test latency.')
+            raise SpeedtestBestServerFailure('Unable to connect to servers to test latency.')
         best = results[fastest]
+        state['sponsor'] = best.get('sponsor', '-')
+        state['city'] = best.get('name', '-')
+        state['server'] = best.get('name', '-')
+        state['dist'] = f"{best.get('d', '-'):.2f}"
+        draw_status_block(state)
         best['latency'] = fastest
         best['jitter'] = jitter_map[fastest]
-
         self.results.ping = fastest
         self.results.jitter = jitter_map[fastest]
         self.results.server = best
-
         self._best.update(best)
-        printer('Best Server:\n%r' % best, debug=True)
         return best
 
     def download(self, callback=do_nothing, threads=None):
@@ -1864,7 +1862,6 @@ def draw_status_block(state):
     DOWN = '⬇️'
     JIT = '📶'
 
-    # Получаем значения
     sponsor = state.get('sponsor', '-')
     city = state.get('city', '-')
     ip = state.get('ip', '-')
@@ -1878,31 +1875,50 @@ def draw_status_block(state):
     share_url = state.get('share_url', None)
     result_url = state.get('result_url', None)
 
+    # Формируем строки для вывода скорости
+    if str(download).strip() == 'Тестирую...':
+        download_str = f"{DOWN}  {'Тестирую...':<8}"
+    elif download == '-' or download == '' or download is None:
+        download_str = f"{DOWN}  {'-':<8}"
+    else:
+        download_str = f"{DOWN}  {download:<8} Мбит/с"
+
+    if str(upload).strip() == 'Тестирую...':
+        upload_str = f"{UP}  {'Тестирую...':<8}"
+    elif upload == '-' or upload == '' or upload is None:
+        upload_str = f"{UP}  {'Ожидание...':<8}"
+    else:
+        upload_str = f"{UP}  {upload:<8} Мбит/с"
+
+    # Сервер с городом
+    server_city = f"{BOLD}{YELLOW}{sponsor}{RESET} {BOLD}[{server}]{RESET}"
+
     lines = [
+        f'{BOLD}{ROCKET}  {CYAN}Speedtest{RESET} {BOLD}by Ookla{RESET}',
         '',
-        f'{BOLD}{ROCKET}  Speedtest by Ookla{RESET}',
+        f'{ARROW} Сервер:     {server_city:<30}',
+        f'{ARROW} Расстояние: {BOLD}{dist} км{RESET}',
         '',
-        f'{ARROW} Провайдер:  {BOLD}{sponsor:<20}{RESET}',
-        f'{ARROW} Город:      {BOLD}{city:<20}{RESET}',
-        f'{ARROW} IP:         {BOLD}{ip:<20}{RESET}',
-        f'{ARROW} Сервер:     {BOLD}{server:<20}{RESET} [{YELLOW}{dist} км{RESET}]',
         f'{ARROW} Пинг:       {BOLD}{PING} {ping:<8} мс{RESET}',
         f'{ARROW} Jitter:     {BOLD}{JIT} {jitter:<8} мс{RESET}',
-        f'{ARROW} Загрузка:   {BOLD}{DOWN} {download:<8} {units}{RESET}',
-        f'{ARROW} Отдача:     {BOLD}{UP} {upload:<8} {units}{RESET}',
+        f'{ARROW} Загрузка:   {BOLD}{download_str}{RESET}',
+        f'{ARROW} Отдача:     {BOLD}{upload_str}{RESET}',
     ]
     if share_url:
+        lines.append('')
         lines.append(f'{ARROW} Картинка:   {BOLD}{CHAIN} {share_url}{RESET}')
     if result_url:
-        lines.append(f'{ARROW} Результат:  {BOLD}{IMG} {result_url}{RESET}')
+        lines.append(f'{ARROW} Результат:  {BOLD}{IMG}  {result_url}{RESET}')
     lines.append('')
     block = '\n'.join(lines)
-    # Перерисовка блока: подняться на N строк, стереть, вывести новый
+    # Очищаем ровно столько строк, сколько было выведено в прошлый раз
+    last_lines = state.get('last_lines', len(lines))
     if state.get('drawn', False):
-        sys.stdout.write(f'\033[{len(lines)}F')  # вверх на N строк
+        sys.stdout.write(f'\033[{last_lines}F')
     sys.stdout.write(block + '\n')
     sys.stdout.flush()
     state['drawn'] = True
+    state['last_lines'] = len(lines)
 
 
 def shell():
@@ -1955,7 +1971,7 @@ def shell():
     else:
         callback = print_dots(shutdown_event)
 
-    printer('Получение конфигурации speedtest.net...', quiet)
+    # printer('Получение конфигурации speedtest.net...', quiet)
     try:
         speedtest = Speedtest(
             source_address=args.source,
@@ -1985,11 +2001,11 @@ def shell():
                         raise
         sys.exit(0)
 
-    printer('Тестирование от %(isp)s (%(ip)s)...' % speedtest.config['client'],
-            quiet)
+    # printer('Тестирование от %(isp)s (%(ip)s)...' % speedtest.config['client'],
+    #         quiet)
 
     if not args.mini:
-        printer('Получение списка серверов speedtest.net...', quiet)
+        # printer('Получение списка серверов speedtest.net...', quiet)
         try:
             speedtest.get_servers(servers=args.server, exclude=args.exclude)
         except NoMatchedServers:
@@ -2006,156 +2022,65 @@ def shell():
             )
 
         if args.server and len(args.server) == 1:
-            printer('Получение информации о выбранном сервере...', quiet)
+            printer('', quiet)
         else:
-            printer('Выбор лучшего сервера по пингу...', quiet)
-        speedtest.get_best_server()
+            printer('', quiet)
+        state = {
+            'sponsor': '-',
+            'city': '-',
+            'ip': speedtest.config['client'].get('ip', '-'),
+            'server': '-',
+            'dist': '-',
+            'ping': '-',
+            'jitter': '-',
+            'download': '-',
+            'upload': '-',
+            'units': args.units[0] if hasattr(args, 'units') else 'Мбит/с',
+            'share_url': None,
+            'result_url': None,
+            'drawn': False
+        }
+        speedtest.get_best_server(state=state)
     elif args.mini:
         speedtest.get_best_server(speedtest.set_mini_server(args.mini))
 
     results = speedtest.results
 
-    printer('Сервер: %(sponsor)s (%(name)s) [%(d)0.2f км]: '
-            '%(latency)s мс' % results.server, quiet)
+
 
     if args.download:
-        printer('Тестирование скорости загрузки', quiet,
-                end=('', '\n')[bool(debug)])
-        speedtest.download(
-            callback=callback,
-            threads=(None, 1)[args.single]
-        )
-        printer('Загрузка: %0.2f М%s/с' %
-                ((results.download / 1000.0 / 1000.0) / args.units[1],
-                 args.units[0]),
-                quiet)
+        # Перед download
+        state['download'] = 'Тестирую...'
+        draw_status_block(state)
+        speedtest.download(callback=do_nothing, threads=(None, 1)[args.single])
+        # После download
+        state['download'] = f"{(results.download / 1000.0 / 1000.0) / args.units[1]:.2f}"
+        draw_status_block(state)
     else:
         printer('Пропуск теста загрузки', quiet)
 
     if args.upload:
-        printer('Тестирование скорости отдачи', quiet,
-                end=('', '\n')[bool(debug)])
-        speedtest.upload(
-            callback=callback,
-            pre_allocate=args.pre_allocate,
-            threads=(None, 1)[args.single]
-        )
-        printer('Отдача: %0.2f М%s/с' %
-                ((results.upload / 1000.0 / 1000.0) / args.units[1],
-                 args.units[0]),
-                quiet)
-    else:
-        printer('Пропуск теста отдачи', quiet)
+        # Перед upload
+        state['upload'] = 'Тестирую...'
+        draw_status_block(state)
+        speedtest.upload(callback=do_nothing, pre_allocate=args.pre_allocate, threads=(None, 1)[args.single])
+        # После upload
+        state['upload'] = f"{(results.upload / 1000.0 / 1000.0) / args.units[1]:.2f}"
+        draw_status_block(state)
 
-    printer('Результаты:\n%r' % results.dict(), debug=True)
-
-    if not args.simple and args.share:
-        results.share()
-
-    # После получения результатов:
-    if not (args.csv or args.json):
-        # Цвета и оформление в стиле oh-my-zsh (robbyrussell)
-        RESET = '\033[0m'
-        BOLD = '\033[1m'
-        CYAN = '\033[36m'
-        GREEN = '\033[32m'
-        YELLOW = '\033[33m'
-        RED = '\033[31m'
-        MAGENTA = '\033[35m'
-        BLUE = '\033[34m'
-        GRAY = '\033[90m'
-        # Символы
-        ARROW = '➜'
-        ROCKET = '🚀'
-        CHAIN = '🔗'
-        IMG = '🖼️'
-        PING = '🏓'
-        UP = '⬆️'
-        DOWN = '⬇️'
-        JIT = '📶'
-
-        # Форматируем значения
-        download = (results.download / 1000.0 / 1000.0) / args.units[1]
-        upload = (results.upload / 1000.0 / 1000.0) / args.units[1]
-        ping = results.ping
-        jitter = getattr(results, 'jitter', None)
-        units = args.units[0]
-        server = results.server
-        share_url = getattr(results, '_share', None)
-        result_url = None
-        if share_url and 'result/' in share_url:
+    # Явно вызываем share для получения ссылки на результат
+    try:
+        share_url = results.share()
+        state['share_url'] = share_url
+        if 'result/' in share_url:
             result_id = share_url.split('result/')[-1].replace('.png','')
-            result_url = f'https://www.speedtest.net/result/{result_id}'
+            state['result_url'] = f'https://www.speedtest.net/result/{result_id}'
+        draw_status_block(state)
+    except Exception:
+        pass
 
-        # Красивый вывод с выравниванием и пустыми строками
-        print('\n' + BOLD + ROCKET + '  Speedtest by Ookla' + RESET)
-        print()
-        print(f"{ARROW} Провайдер:  {BOLD}{server.get('sponsor','?'):<20}{RESET}")
-        print(f"{ARROW} Город:      {BOLD}{server.get('name','?'):<20}{RESET}")
-        print(f"{ARROW} IP:         {BOLD}{results.client.get('ip','?'):<20}{RESET}")
-        print(f"{ARROW} Сервер:     {BOLD}{server.get('name','?'):<20}{RESET} [{YELLOW}{server.get('d','?'):.2f} км{RESET}]")
-        print(f"{ARROW} Пинг:       {BOLD}{PING} {ping:<8.3f} мс{RESET}")
-        print(f"{ARROW} Jitter:     {BOLD}{JIT} {jitter if jitter is not None else '-':<8} мс{RESET}")
-        print(f"{ARROW} Загрузка:   {BOLD}{DOWN} {download:<8.2f} М{units}/с{RESET}")
-        print(f"{ARROW} Отдача:     {BOLD}{UP} {upload:<8.2f} М{units}/с{RESET}")
-        if share_url:
-            print(f"{ARROW} Картинка:   {BOLD}{CHAIN} {share_url}{RESET}")
-        if result_url:
-            print(f"{ARROW} Результат:  {BOLD}{IMG} {result_url}{RESET}")
-        print()
-
-    if args.simple:
-        # Цвета и оформление в стиле oh-my-zsh (robbyrussell)
-        RESET = '\033[0m'
-        BOLD = '\033[1m'
-        CYAN = '\033[36m'
-        GREEN = '\033[32m'
-        YELLOW = '\033[33m'
-        RED = '\033[31m'
-        MAGENTA = '\033[35m'
-        BLUE = '\033[34m'
-        GRAY = '\033[90m'
-        # Символы
-        ARROW = '➜'
-        ROCKET = '🚀'
-        CHAIN = '🔗'
-        IMG = '🖼️'
-        PING = '🏓'
-        UP = '⬆️'
-        DOWN = '⬇️'
-        JIT = '📶'
-
-        # Форматируем значения
-        download = (results.download / 1000.0 / 1000.0) / args.units[1]
-        upload = (results.upload / 1000.0 / 1000.0) / args.units[1]
-        ping = results.ping
-        jitter = results.jitter
-        units = args.units[0]
-        server = results.server
-        share_url = results._share
-        result_url = None
-        if share_url and 'result/' in share_url:
-            result_id = share_url.split('result/')[-1].replace('.png','')
-            result_url = f'https://www.speedtest.net/result/{result_id}'
-
-        # Красивый вывод
-        printer(f"{BOLD}{ROCKET}  Speedtest by Ookla{RESET}")
-        printer(f"{ARROW}  {CYAN}Провайдер:{RESET} {BOLD}{server.get('sponsor','?')}{RESET}  {CYAN}Город:{RESET} {BOLD}{server.get('name','?')}{RESET}  {CYAN}IP:{RESET} {BOLD}{results.client.get('ip','?')}{RESET}")
-        printer(f"{ARROW}  {CYAN}Сервер:{RESET} {BOLD}{server.get('name','?')}{RESET} [{YELLOW}{server.get('d','?'):.2f} км{RESET}]  {CYAN}Задержка:{RESET} {BOLD}{PING} {ping} мс{RESET}  {CYAN}Jitter:{RESET} {BOLD}{JIT} {jitter} мс{RESET}")
-        printer(f"{ARROW}  {GREEN}{DOWN} Загрузка:{RESET}   {BOLD}{download:.2f} М{units}/с{RESET}")
-        printer(f"{ARROW}  {MAGENTA}{UP} Отдача:{RESET}     {BOLD}{upload:.2f} М{units}/с{RESET}")
-        if share_url:
-            printer(f"{ARROW}  {BLUE}{CHAIN} Ссылка на картинку:{RESET} {BOLD}{share_url}{RESET}")
-        if result_url:
-            printer(f"{ARROW}  {BLUE}{IMG} Результат на сайте:{RESET} {BOLD}{result_url}{RESET}")
-    elif args.csv:
-        printer(results.csv(delimiter=args.csv_delimiter))
-    elif args.json:
-        printer(results.json())
-
-    if args.share and not machine_format:
-        printer('Поделиться результатом: %s' % results.share())
-
+    # Теперь все этапные сообщения убраны, только живой блок
+ 
 
 def main():
     try:
