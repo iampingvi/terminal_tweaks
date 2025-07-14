@@ -1,0 +1,4 @@
+sp() {
+  echo "🚀 Тест скорости интернета (speedtest):"
+  python3 ~/.terminal/.scripts/speedtest_ru.py
+} 
